@@ -1,0 +1,10 @@
+mode: 'paper'
+paper:
+    api_key:
+    secret_key:
+    base_url: https://paper-api.alpaca.markets
+
+live:
+    api_key:
+    secret_key:
+    base_url: https://api.alpaca.markets
