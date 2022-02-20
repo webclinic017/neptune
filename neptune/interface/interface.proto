@@ -1,0 +1,94 @@
+// Autotrader Pub-Sub interface definition
+
+syntax = "proto3";
+
+enum WebSocketAction {
+  subscribe = 0;
+  unsubscribe = 1;
+}
+
+enum OrderType {
+  market     = 0;
+  limit      = 1;
+  stop       = 2;
+  stop_limit = 3;
+  bracket    = 4; // Not valid in Alpaca
+  trailing_stop = 5;
+}
+
+enum OrderSide {
+  buy  = 0;
+  sell = 1;
+}
+
+enum TimeInForce {
+  day = 0;
+  gtc = 1;
+  opg = 2;
+  cls = 3;
+  ioc = 4;
+  fok = 5;
+}
+
+// Possible order statuses
+// https://alpaca.markets/docs/trading-on-alpaca/orders/#order-lifecycle
+enum OrderStatus {
+  new = 0;
+  partially_filled = 1;
+  filled = 2;
+  done_for_day = 3;
+  canceled = 4;
+  expired = 5;
+  replaced = 6;
+  pending_cancel = 7;
+  pending_replace = 8;
+  accepted = 9;
+  pending_new = 10;
+  accepted_for_bidding = 11;
+  stopped = 12;
+  rejected = 13;
+  suspended = 14;
+  calculated = 15;
+}
+
+message Header {
+  uint64 utc_time = 1;
+};
+
+/*
+   @message Order
+   @port    5005
+   @channel
+   @publisher alpaca
+   @summary Alpaca message used to provide order status and updates
+   https://alpaca.markets/docs/api-documentation/api-v2/orders/#properties
+*/
+message Order {
+  Header         hdr = 1;      // Message header
+  string         id = 2;
+  string         client_order_id = 3;
+  string         created_at = 4;
+  string         updated_at = 5;
+  string         submitted_at = 6;
+  string         filled_at = 7;
+  string         expired_at = 8;
+  string         cancelled_at = 9;
+  string         failed_at = 10;
+  string         replaced_at = 11;
+  string         replaced_by = 12;
+  string         replaces = 13;
+  string         asset_id = 14;
+  string         symbol = 15;
+  string         asset_class = 16;
+  uint32         qty = 17;
+  uint32         filled_qty = 18;
+  OrderType      type = 19;
+  OrderSide      side = 20;
+  TimeInForce    time_in_force = 21;
+  float          limit_price = 22;
+  float          stop_price = 23;
+  float          filled_avg_price = 24;
+  OrderStatus    status = 25;
+  bool           extended_hours = 26;
+  repeated Order legs = 27;
+}

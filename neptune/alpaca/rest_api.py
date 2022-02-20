@@ -13,7 +13,7 @@ import numpy as np
 from pytz import timezone
 
 # Local packages
-from utilities import format_account, format_order, format_position 
+from neptune.alpaca.utilities import format_account, format_order, format_position 
 from neptune.config import NeptuneConfiguration
 
 
@@ -30,7 +30,8 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
                          base_url=config.base_url,
                          api_version='v2',
                          raw_data=True)
-        self.logger = logging.getLogger('alpaca')
+        self.logger = logging.getLogger(__class__.__name__)
+        self.logger.warning("test")
 
     def get_seconds_until_market_open(self):
         """Return the time in seconds until the market opens next.
@@ -52,13 +53,13 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         @return: float of limit price
         """
         try:
-            self.logger.info("[get_limit_price] API: get_trades | Symbol: {} | Seconds: {}".format(symbol, seconds))
+            self.logger.debug("[get_limit_price] API: get_trades | Symbol: {} | Seconds: {}".format(symbol, seconds))
             end = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
             start = end - dt.timedelta(seconds=seconds)
             trades = self.get_trades(symbol=symbol, start=start.isoformat(), end=end.isoformat()).df
             price = np.average(trades['price'], weights=trades['size'])
         except Exception as e:
-            self.logger.info("[get_limit_price] API: get_latest_trade | Symbol: {}".format(symbol, seconds))
+            self.logger.debug("[get_limit_price] API: get_latest_trade | Symbol: {}".format(symbol, seconds))
             trade = self.get_latest_trade(symbol=symbol)
             price = trade['p']
         return price
@@ -67,7 +68,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         """Get account info
         https://alpaca.markets/docs/api-documentation/api-v2/account/#account-entity
         """
-        self.logger.info("[get_account]")
+        self.logger.debug("[get_account]")
         account = super().get_account()
         return format_account(account)
 
@@ -77,7 +78,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         @param kwargs: same arguments as superclass list_orders
         @return: list of order dicts
         """
-        self.logger.info("[list_orders] {}".format(kwargs))
+        self.logger.debug("[list_orders] {}".format(kwargs))
         order_l = super().list_orders(**kwargs)
         return {order['id']: format_order(order) for order in order_l}
 
@@ -87,7 +88,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         @param kwargs: same arguments as superclass list_orders
         @return: order dict
         """
-        self.logger.info("[submit_order] {}".format(kwargs))
+        self.logger.debug("[submit_order] {}".format(kwargs))
         order = super().submit_order(**kwargs)
         return format_order(order)
 
@@ -108,7 +109,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         """
         order = {}
         try:
-            self.logger.info("[close_position] Symbol: {}".format(symbol))
+            self.logger.debug("[close_position] Symbol: {}".format(symbol))
             return format_order(super().close_position(symbol=symbol))
         except alpaca_trade_api.rest.APIError as e:
             self.logger.error('[close_position] Symbol: {} | Exception: {}'.format(symbol, e))
@@ -119,7 +120,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         https://alpaca.markets/docs/api-documentation/api-v2/positions/#get-open-positions
         @return: positions dict
         """
-        self.logger.info("[list_positions]")
+        self.logger.debug("[list_positions]")
         position_l = super().list_positions()
         return {pos['symbol']: format_position(pos) for pos in position_l}
 
@@ -130,7 +131,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         @return: Position object if valid, else None
         """
         try:
-            self.logger.info("[get_position] Symbol: {}".format(symbol))
+            self.logger.debug("[get_position] Symbol: {}".format(symbol))
             position = super().get_position(symbol)
             return format_position(position)
         except alpaca_trade_api.rest.APIError as e:
@@ -154,7 +155,15 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
 if __name__ == '__main__':
     api = AlpacaRestAPI()
     order = api.submit_order(
-        symbol='SPY', type='market', side='buy', qty=10, time_in_force='gtc')
+        symbol='SPY', type='limit', limit_price=434, side='buy', qty=10, time_in_force='gtc',
+        order_class='bracket',
+        take_profit={
+            'limit_price': 440
+        },
+        stop_loss={
+            'stop_price': 432,
+            'limit_price': 430
+        } )
 
     positions = api.list_positions()
     orders = api.list_orders()

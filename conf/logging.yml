@@ -20,8 +20,12 @@ handlers:
     level: INFO
     filename: Autotrader
 loggers:
-  alpaca:
-    level: DEBUG
+  AlpacaRestAPI:
+    level: INFO
+    handlers: [console, file]
+    propagate: no
+  TradeUpdateStream:
+    level: INFO
     handlers: [console, file]
     propagate: no
 root:

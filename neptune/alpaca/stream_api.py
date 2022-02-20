@@ -4,22 +4,160 @@
 The Alpaca module contains several utilities for interacting with the Alpaca trading platform.
 """
 import asyncio
+from enum import auto
 import json
 import logging
 import threading
 import time
 import traceback
 import alpaca_trade_api
-from google.protobuf.json_format import ParseDict
+import numpy as np
+import uvloop
+
+from typing import Dict, Callable
 
 # Local imports
-from alpaca.interface.generated.interface_pb2 import Order, Aggregate, Trade
-from alpaca.interface.utilities import proto_utilities
-from alpaca.api.utilities import ORDER_STATUS_TRANSFORM
-from alpaca.conf.config import AlpacaMsConfiguration, configure_logging
-from alpaca.api.marketstore_api import MarketStoreApi
-from alpaca.common.universe import SymbolUniverse
+from neptune.config import NeptuneConfiguration
+from neptune.common.universe import SymbolUniverse
 
+from neptune.alpaca.utilities import ORDER_STATUS_TRANSFORM
+from neptune.alpaca.api_types import Order
+from neptune.alpaca.marketstore_api import MarketStoreApi
+from neptune.alpaca.rest_api import AlpacaRestAPI
+
+async def test_print():
+    while True:
+        logging.error("Message from test_print") 
+        await asyncio.sleep(5)
+
+class TradeUpdateStream:
+    def __init__(self, autostart=False, query_period=20):
+        self.positions = {}
+        self.logger = logging.getLogger('TradeUpdateStream')
+        
+        self._callbacks = []
+        self._stream = None
+        self._event_loop = None
+        self._alpaca_rest = AlpacaRestAPI()
+        self._query_period = query_period
+        self._last_query_time = 0.0
+        
+        if autostart:
+            self.start()
+
+    def start(self):
+        """Start PositionManager processing thread."""
+        #threading.Thread(target=self._run, daemon=True).start()
+        self._run()
+    
+    def stop(self):
+        pass
+    
+    def register_callback(self, fcn: Callable):
+        """Add custom callback
+
+        Args:
+            fcn (Callable): _description_
+        """
+        self._callbacks.append(fcn)
+
+    def get_positions(self) -> Dict[str, str]:
+
+        async def _get_positions() -> dict:
+            return self.positions.copy()
+
+        result = {}
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                _get_positions(), loop=self.event_loop
+            )
+            result = fut.result()
+        except Exception as e:
+            self.logger.error(f"Error getting current positions: {e}")
+        return result
+
+    def _run(self):
+        """Thread containing Alpaca websocket client event loop and some re-connection logic."""
+        # Internal function with recursive call to handle re-connection.
+        def run_connection():
+            try:
+                self.logger.info("Connecting to Alpaca websocket")
+                self._stream.run()
+            except Exception as e:
+                self.logger.error(f"Exception from websocket connection: {e}")
+            finally:
+                self.logger.info("Trying to re-establish connection")
+                time.sleep(3)
+                run_connection()
+
+        # Create event loop
+        try:
+            # make sure we have an event loop, if not create a new one
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+        finally:
+            self._event_loop = asyncio.get_event_loop()
+            self._event_loop.set_debug(True)
+
+        # Create a websocket connection
+        # This is used to get asynchronous trade updates from Alpaca
+        config = NeptuneConfiguration()
+        self._stream = alpaca_trade_api.Stream(
+            key_id=config.api_key, secret_key=config.secret_key, base_url=config.base_url 
+        )
+
+        # Subscribe to trade updates and add synchrounous position updating task to event loop
+        self._stream.subscribe_trade_updates(self.handle_trade_update)
+        asyncio.ensure_future(self.update_positions())
+
+        # Call reconnection handler
+        run_connection()
+
+    async def handle_trade_update(self, msg: dict):
+        """Asynchronous couroutine to handle trade updates received from Alpaca websocket.
+
+        Args:
+            msg (dict): trade update message
+        """
+
+        # Update the positions dict
+        self._update_positions() 
+
+    async def update_positions(self):
+        """Synchronous coroutine to update position dictionary."""
+        while True:
+            last_query_dtime = time.time() - self._last_query_time
+            if last_query_dtime >= self._query_period:
+                print("Updating positions")
+                self._update_positions()
+            await asyncio.sleep(self._query_period)
+
+    def _update_positions(self):
+        """Internal class helper function to perform position updates."""
+
+        # Store time we are querying the API
+        self._last_query_time = time.time()
+
+        # Get current positions using REST API client
+        positions = self._alpaca_rest.list_positions()
+        updated_symbols = list(positions.keys())
+
+        # Get new symbols
+        current_symbols = list(self.positions.keys())
+        new_symbols = np.setdiff1d(updated_symbols, current_symbols)
+        for sym in new_symbols:
+            self.logger.info("New position {}".format(sym))
+
+        # Get removed symbols
+        removed_symbols = np.setdiff1d(current_symbols, updated_symbols)
+        for sym in removed_symbols:
+            self.positions.pop(sym)
+            self.logger.info("Closed position {}".format(sym))
+
+        # Overwrite dict with new positions
+        self.positions = positions
+    
 
 class AlpacaWebSocket(alpaca_trade_api.Stream):
     """
@@ -27,7 +165,7 @@ class AlpacaWebSocket(alpaca_trade_api.Stream):
     """
 
     def __init__(self):
-        config = AlpacaMsConfiguration()
+        config = NeptuneConfiguration()
         super().__init__(key_id=config.api_key,
                          secret_key=config.secret_key,
                          base_url=config.base_url,
@@ -40,17 +178,40 @@ class AlpacaWebSocket(alpaca_trade_api.Stream):
         # Create Marketstore API
         self.marketstore = MarketStoreApi()
 
-        # Configure socket for publishing
-        self.logger.info("Creating Order socket")
-        proto_parser = proto_utilities.ProtoParser()
-        # self.data_sockets = {'order': proto_parser.get_socket('Order', sub=False, bind=True),
-        #                     'bar': proto_parser.get_socket('Aggregate', sub=False, bind=True),
-        #                     'trade': proto_parser.get_socket('Trade', sub=False, bind=True),
-        #                     'crypto': None}
-        self.aggregate = Aggregate()
-        self.trade = Trade()
-        self.event = threading.Event()
-        self._initialize()
+        self.thr = threading.Thread(target=self._run, daemon=True)
+        self.thr.start()
+
+    def _run(self):
+        """Thread containing Alpaca websocket client event loop and some re-connection logic."""
+        # Internal function with recursive call to handle re-connection.
+        def run_connection():
+            try:
+                self.logger.info("Connecting to Alpaca websocket")
+                self.run()
+            except Exception as e:
+                self.logger.error(f"Exception from websocket connection: {e}")
+            finally:
+                self.logger.info("Trying to re-establish connection")
+                time.sleep(3)
+                run_connection()
+
+        # Create event loop
+        try:
+            # make sure we have an event loop, if not create a new one
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+        finally:
+            self._event_loop = asyncio.get_event_loop()
+            self._event_loop.set_debug(True)
+
+        # Subscribe to trade updates and add synchrounous position updating task to event loop
+        self.subscribe_trade_updates(self.process_order)
+        asyncio.ensure_future(self.update_positions())
+
+        # Call reconnection handler
+        run_connection()
+    
 
     def stop(self):
         """Stop all threads and close sockets.
@@ -59,148 +220,27 @@ class AlpacaWebSocket(alpaca_trade_api.Stream):
         self.event.set()
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.stop_ws())
-        # _ = [socket.close() for socket in self.data_sockets.values()]
-        self.heartbeat.join()
 
     def _initialize(self):
         """Initializes object. Subscribes to data. Start heartbeat thread.
         """
         # Subscribe to Order updates
-        self.subscribe_trade_updates(self.process_order)
 
-        # Subscribe to all minute aggregate data
-        symbols = list(SymbolUniverse().data.index)
-        for sym in symbols:
-            self.subscribe_bars(self.process_bar_data, sym)
-
-        # Subscribe to crypto pairs
-        self.subscribe_crypto_bars(self.process_crypto, '*')
-        self.subscribe_crypto_bars(self.process_crypto2, '*')
-
-        self.bar_time = dict()
-        self.msg_counts = {'order': 0, 'bar': 0, 'trade': 0, 'crypto': 0}
-        self.heartbeat = threading.Thread(target=self.log_status, daemon=False)
-
-        # Start threads
-        self.heartbeat.start()
-
-    async def process_crypto(self, crypto_data: dict):
-        self.msg_counts['crypto'] += 1
-        print("Function1")
-        
-    async def process_crypto2(self, crypto_data: dict):
-        self.msg_counts['crypto'] += 1
-        print("Function2")
+    async def update_positions(self):
+        """Synchronous coroutine to update position dictionary."""
+        while True:
+            print("Updating positions")
+            await asyncio.sleep(self._query_period)
 
     async def process_order(self, order_data: dict):
         """Process Order data
         :param order_data: https://alpaca.markets/docs/api-documentation/api-v2/orders/#order-entity
         """
 
-        # Increment counter
-        self.msg_counts['order'] += 1
-
         # Convert python dict to Order object, pack status in order dict for publishing
         order = order_data._raw['order']
         order['status'] = order_data._raw['event']
-        self.logger.debug("\n{}".format(json.dumps(order, indent=3)))
-
-        # Translate stream return values to fit proto definition
-        if order['status'] in ORDER_STATUS_TRANSFORM.keys():
-            order['status'] = ORDER_STATUS_TRANSFORM[order['status']]
-        msg = ParseDict(order, Order(), ignore_unknown_fields=True)
-
-        # Publish on socket
-        topic = msg.symbol
-        # self.data_sockets['order'].send_multipart([topic.encode(), msg.SerializeToString()])
-
-    async def process_bar_data(self, bar_data: dict):
-        """Process Aggregate (bar) data
-        :param bar_data: https://alpaca.markets/docs/api-documentation/api-v2/market-data/alpaca-data-api-v2/historical/#bars
-        """
-
-        # Increment counter
-        self.msg_counts['bar'] += 1
-        symbol = bar_data['S']
-        time_ms = int(time.time_ns() / 1e6)
-
-        # Write to Marketstore
-        self.marketstore.insert(bar_data)
-
-        # Pack protobuf message
-        self.aggregate.Clear()
-        self.aggregate.hdr.utc_time = int((bar_data['t'].seconds + bar_data['t'].nanoseconds / 1e9) * 1e3)
-        self.aggregate.ev = 'AM'
-        self.aggregate.sym = symbol
-        self.aggregate.v = bar_data['v']
-        self.aggregate.o = bar_data['o']
-        self.aggregate.h = bar_data['h']
-        self.aggregate.l = bar_data['l']
-        self.aggregate.c = bar_data['c']
-        self.aggregate.vw = bar_data['vw']
-        self.aggregate.s = int(self.bar_time.get(self.aggregate.sym, time_ms - 6e4))
-        self.aggregate.e = time_ms
-
-        # Store end time for next bar
-        self.bar_time[symbol] = time_ms
-
-        # Publish on socket, use symbol as topic name
-        # self.data_sockets['bar'].send_multipart(
-        #    [symbol.encode(), self.aggregate.SerializeToString()])
-
-    async def process_trade_data(self, trade_data: dict):
-        """Process Trade data
-        :param trade_data: https://alpaca.markets/docs/api-documentation/api-v2/market-data/alpaca-data-api-v2/historical/#trades
-        """
-
-        # Increment counter
-        self.msg_counts['trade'] += 1
-        symbol = trade_data['S']
-
-        # Pack protobuf message
-        self.trade.Clear()
-        self.trade.hdr.utc_time = int(time.time_ns() / 1e6)
-        self.trade.sym = symbol
-        self.trade.exchange = trade_data['x']
-        self.trade.price = trade_data['p']
-        self.trade.size = trade_data['s']
-        self.trade.timestamp = int(trade_data['t'].seconds * 1e9 + trade_data['t'].nanoseconds)
-        self.trade.tape = trade_data['z']
-        _ = [self.trade.conditions.append(c.encode('utf-8')) for c in trade_data['c']]
-
-        # Publish on socket, use symbol as topic name
-        # self.data_sockets['trade'].send_multipart(
-        #    [symbol.encode(), self.trade.SerializeToString()])
-
-    def log_status(self):
-        """Logs websocket status and message count every 30 seconds.
-        """
-        streams = {'order': self._trading_ws,
-                   'bar': self._data_ws,
-                   'crypto': self._crypto_ws}
-
-        # Display initial status message
-        for name, stream in streams.items():
-            while True:
-                try:
-                    self.logger.info("[{}] Host: {} | Client: {} | Port: {} | Status: {}".format(
-                        name, stream._endpoint, stream._ws.local_address[0], stream._ws.port, stream._running))
-                    break
-                except Exception as e:
-                    self.logger.info("Waiting for {} connection...".format(name))
-                    time.sleep(3)
-
-        # Start loop at 10 or 40 second mark for heartbeat message
-        sec = time.time() % 60
-        time.sleep(min([abs(10 - sec), abs(40 - sec)]))
-        while not self.event.is_set():
-            logstr = []
-            for name, stream in streams.items():
-                state = "Running" if stream._running else "**Disconnected**"
-                logstr.append("[{}] {} | Count: {}".format(name, state, self.msg_counts[name]))
-                self.msg_counts[name] = 0
-            self.logger.info(" || ".join(logstr))
-            time.sleep(30)
+        self.logger.error("\n{}".format(json.dumps(order, indent=3)))
 
     @staticmethod
     def Run(kill_event=None):
@@ -230,7 +270,12 @@ class AlpacaWebSocket(alpaca_trade_api.Stream):
 
 
 if __name__ == '__main__':
-    configure_logging()
-    AlpacaWebSocket.Run()
 
-    print()
+    #api = AlpacaWebSocket()
+
+    #uvloop.install()
+
+    
+    ts = TradeUpdateStream(autostart=True)
+    while True:
+        time.sleep(10)
