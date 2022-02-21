@@ -25,7 +25,7 @@ loggers:
     handlers: [console, file]
     propagate: no
   TradeUpdateStream:
-    level: INFO
+    level: DEBUG
     handlers: [console, file]
     propagate: no
 root:

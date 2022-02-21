@@ -20,8 +20,7 @@ from typing import Dict, Callable
 from neptune.config import NeptuneConfiguration
 from neptune.common.universe import SymbolUniverse
 
-from neptune.alpaca.utilities import ORDER_STATUS_TRANSFORM
-from neptune.alpaca.api_types import Order
+from neptune.alpaca.api_types import OrderMessage
 from neptune.alpaca.marketstore_api import MarketStoreApi
 from neptune.alpaca.rest_api import AlpacaRestAPI
 
@@ -47,8 +46,7 @@ class TradeUpdateStream:
 
     def start(self):
         """Start PositionManager processing thread."""
-        #threading.Thread(target=self._run, daemon=True).start()
-        self._run()
+        threading.Thread(target=self._run, daemon=True).start()
     
     def stop(self):
         pass
@@ -69,7 +67,7 @@ class TradeUpdateStream:
         result = {}
         try:
             fut = asyncio.run_coroutine_threadsafe(
-                _get_positions(), loop=self.event_loop
+                _get_positions(), loop=self._event_loop
             )
             result = fut.result()
         except Exception as e:
@@ -98,13 +96,14 @@ class TradeUpdateStream:
             asyncio.set_event_loop(asyncio.new_event_loop())
         finally:
             self._event_loop = asyncio.get_event_loop()
-            self._event_loop.set_debug(True)
+            self._event_loop.set_debug(False)
 
         # Create a websocket connection
         # This is used to get asynchronous trade updates from Alpaca
         config = NeptuneConfiguration()
         self._stream = alpaca_trade_api.Stream(
-            key_id=config.api_key, secret_key=config.secret_key, base_url=config.base_url 
+            key_id=config.api_key, secret_key=config.secret_key, base_url=config.base_url,
+            data_feed='sip', raw_data=True
         )
 
         # Subscribe to trade updates and add synchrounous position updating task to event loop
@@ -120,21 +119,26 @@ class TradeUpdateStream:
         Args:
             msg (dict): trade update message
         """
+        test = OrderMessage(msg)
+        print(test.get_response_latency())
 
         # Update the positions dict
         self._update_positions() 
+
+        for callback in self._callbacks:
+            callback(OrderMessage(msg))
 
     async def update_positions(self):
         """Synchronous coroutine to update position dictionary."""
         while True:
             last_query_dtime = time.time() - self._last_query_time
             if last_query_dtime >= self._query_period:
-                print("Updating positions")
                 self._update_positions()
             await asyncio.sleep(self._query_period)
 
     def _update_positions(self):
         """Internal class helper function to perform position updates."""
+
 
         # Store time we are querying the API
         self._last_query_time = time.time()
@@ -276,6 +280,11 @@ if __name__ == '__main__':
     #uvloop.install()
 
     
-    ts = TradeUpdateStream(autostart=True)
+    ts = TradeUpdateStream(autostart=True, query_period=8)
+    time.sleep(1)
+    asyncio.run_coroutine_threadsafe(test_print(), loop=ts._event_loop)
     while True:
-        time.sleep(10)
+        time.sleep(1)
+        t0 = time.time()
+        positions = ts.get_positions()
+        logging.warning("Time: {}".format(time.time() - t0))

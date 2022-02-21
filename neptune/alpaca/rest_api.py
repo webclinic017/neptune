@@ -13,8 +13,8 @@ import numpy as np
 from pytz import timezone
 
 # Local packages
-from neptune.alpaca.utilities import format_account, format_order, format_position 
 from neptune.config import NeptuneConfiguration
+from neptune.alpaca.api_types import OrderMessage, PositionMessage, AccountMessage
 
 
 class AlpacaRestAPI(alpaca_trade_api.REST):
@@ -31,7 +31,6 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
                          api_version='v2',
                          raw_data=True)
         self.logger = logging.getLogger(__class__.__name__)
-        self.logger.warning("test")
 
     def get_seconds_until_market_open(self):
         """Return the time in seconds until the market opens next.
@@ -70,7 +69,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         """
         self.logger.debug("[get_account]")
         account = super().get_account()
-        return format_account(account)
+        return AccountMessage(account)
 
     def list_orders(self, **kwargs) -> dict:
         """Wrapper around list_orders to convert Order objects to list
@@ -80,7 +79,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         """
         self.logger.debug("[list_orders] {}".format(kwargs))
         order_l = super().list_orders(**kwargs)
-        return {order['id']: format_order(order) for order in order_l}
+        return {order['id']: OrderMessage(order) for order in order_l}
 
     def submit_order(self, **kwargs) -> dict:
         """Wrapper around submit_order to convert Order object to dict
@@ -90,7 +89,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         """
         self.logger.debug("[submit_order] {}".format(kwargs))
         order = super().submit_order(**kwargs)
-        return format_order(order)
+        return OrderMessage(order)
 
     def cancel_order_by_symbol(self, symbol: str):
         """Cancel all open orders for a symbol.
@@ -101,16 +100,15 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
             if v['symbol'] == symbol:
                 self.cancel_order(order_id=k)
 
-    def close_position(self, symbol: str) -> Optional[dict]:
+    def close_position(self, symbol: str) -> Optional[OrderMessage]:
         """Wrapper around list_orders to convert Order objects to list
         https://alpaca.markets/docs/api-documentation/api-v2/positions/#close-a-position
         @return: list of order dicts
         :param **kwargs:
         """
-        order = {}
         try:
             self.logger.debug("[close_position] Symbol: {}".format(symbol))
-            return format_order(super().close_position(symbol=symbol))
+            return OrderMessage(super().close_position(symbol=symbol))
         except alpaca_trade_api.rest.APIError as e:
             self.logger.error('[close_position] Symbol: {} | Exception: {}'.format(symbol, e))
             return None
@@ -122,7 +120,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         """
         self.logger.debug("[list_positions]")
         position_l = super().list_positions()
-        return {pos['symbol']: format_position(pos) for pos in position_l}
+        return {pos['symbol']: PositionMessage(pos) for pos in position_l}
 
     def get_position(self, symbol: str) -> Optional[dict]:
         """Get current position for given symbol.
@@ -133,7 +131,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
         try:
             self.logger.debug("[get_position] Symbol: {}".format(symbol))
             position = super().get_position(symbol)
-            return format_position(position)
+            return PositionMessage(position)
         except alpaca_trade_api.rest.APIError as e:
             self.logger.error("[get_position] Symbol: {} | Exception: {}".format(symbol, e))
             return None
@@ -154,6 +152,7 @@ class AlpacaRestAPI(alpaca_trade_api.REST):
 
 if __name__ == '__main__':
     api = AlpacaRestAPI()
+    
     order = api.submit_order(
         symbol='SPY', type='limit', limit_price=434, side='buy', qty=10, time_in_force='gtc',
         order_class='bracket',

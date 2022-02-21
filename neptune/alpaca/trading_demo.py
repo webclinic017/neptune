@@ -14,6 +14,8 @@ from typing import Dict
 import alpaca_trade_api as alpaca
 
 # API Keys ====================================================================
+API_KEY = "PKWMCUZB4QIK4NNOLR37"
+API_SECRET = "3t27JWged7fcjLVAdaGBpdSumXXmZ7mecu2741GJ"
 APCA_API_BASE_URL = "https://paper-api.alpaca.markets"
 
 

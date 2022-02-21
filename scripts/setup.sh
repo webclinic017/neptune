@@ -56,7 +56,6 @@ function updateAlpacaPackages()
 {
   echo "Updating Alpaca Trade API"
   python -m pip install --upgrade pip
-  pip install git+https://github.com/alpacahq/alpaca-trade-api-python
   pip install git+https://github.com/alpacahq/pymarketstore
   pip install git+https://github.com/mariostoev/finviz
   pip install git+https://github.com/twopirllc/pandas-ta.git@development

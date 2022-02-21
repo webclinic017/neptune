@@ -3,6 +3,10 @@ from __future__ import annotations
 from enum import Enum
 from typing import List
 import pandas as pd
+import logging
+import json
+
+logger = logging.getLogger()
 
 class PositionSide(Enum):
     LONG = "long"
@@ -57,14 +61,75 @@ class OrderClass(Enum):
     def _missing_(self, value):
         return OrderClass.SIMPLE
 
-class Order:
-    def __init__(self, msg: dict):
         
-        self.id: str = None
-        self.client_id: str = None
-        self.symbol: str = None
+class ApiMessage:
+    def __init__(self, msg: dict):
+        self._raw = msg
+        self._timestamp = pd.Timestamp.utcnow()
+        
+    def __getattr__(self, name: str):
+        value = self._raw[name]
+        if value:
+            if name[-3:] == "_at":
+                value = pd.to_datetime(value)
+            elif not isinstance(value, bool):
+                try:
+                    value = float(value)
+                except ValueError:
+                    pass
+        return value
 
-        self.update(msg)
+    def __str__(self) -> str:
+        """Return payload of Alpaca API Message"""
+        return json.dumps(self._raw, indent=3)
+
+    def __bool__(self) -> bool:
+        """Return validity of message"""
+        return self._raw is not None
+
+
+class AccountMessage(ApiMessage):
+    def __init__(self, msg: dict):
+        """Create wrapper for Account message response from Alpaca API.
+
+        Args:
+            msg (dict): raw payload from Alpaca API
+        """
+        super().__init__(msg)
+
+
+class PositionMessage(ApiMessage):
+    def __init__(self, msg: dict):
+        """Create wrapper for Position message response from Alpaca API.
+
+        Args:
+            msg (dict): raw payload from Alpaca API
+        """
+        super().__init__(msg)
+
+    @property
+    def side(self) -> PositionSide:
+        return PositionSide(self._raw['side'])
+        
+
+class OrderMessage(ApiMessage):
+    def __init__(self, msg: dict):
+        """Create wrapper for Order message response from Alpaca API.
+
+        Args:
+            msg (dict): raw payload from Alpaca API
+        """
+        # Extract order dict from websocket message
+        payload = None
+        if 'stream' in msg.keys():
+            payload = msg.get('data', {}).get('order', None)
+            if payload is None:
+                logger.error("Invalid Order message structure: {}".format(json.dumps(msg, indent=3)))
+        elif 'id' in msg.keys():
+            payload = msg
+
+        # Store raw message
+        super().__init__(payload)
 
     @property
     def side(self) -> OrderSide:
@@ -87,27 +152,23 @@ class Order:
         return OrderClass(self._raw['order_class'])
 
     @property
-    def legs(self) -> List[Order]:
+    def legs(self) -> List[OrderMessage]:
         if self._raw['legs'] is None:
             return []
         else:
-            return [Order(leg) for leg in self._raw['legs']]
+            return [OrderMessage(leg) for leg in self._raw['legs']]
+
+    def get_response_latency(self) -> float:
+        """Calculates latency of Order message from Alpaca API.
+
+        Returns:
+            float: message latency [seconds]
+        """
+        return (self._timestamp - self.updated_at).microseconds / 1e6
+
+if __name__ == '__main__':
+    order = OrderMessage({"stream": "dog", "a": 1, "b": "4"})
     
-    def __getattr__(self, name: str):
-        value = self._raw.get[name]
-        if value:
-            if name[-3:] == "_at":
-                value = pd.to_datetime(value)
-        return value
-        
-    def update(self, msg: dict) -> bool:
-        # Extract order dict from websocket message
-        if 'stream' in msg.keys():
-            msg = msg.get('data', {}).get('order', None)
-            if msg is None:
-                return False
-
-        # Store raw message
-        self._raw = msg
-        return True
-
+    legs = order.legs
+    
+    print()
