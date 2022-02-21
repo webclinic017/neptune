@@ -164,6 +164,10 @@ if __name__ == '__main__':
             'limit_price': 430
         } )
 
+    from neptune.portfolio.neptune_types import Order 
+
+    test = Order.from_alpaca_order(order)
+
     positions = api.list_positions()
     orders = api.list_orders()
     account = api.get_account()

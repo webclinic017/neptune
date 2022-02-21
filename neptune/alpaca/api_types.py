@@ -113,7 +113,7 @@ class PositionMessage(ApiMessage):
         
 
 class OrderMessage(ApiMessage):
-    def __init__(self, msg: dict):
+    def __init__(self, msg: dict, parent_id=None):
         """Create wrapper for Order message response from Alpaca API.
 
         Args:
@@ -129,6 +129,7 @@ class OrderMessage(ApiMessage):
             payload = msg
 
         # Store raw message
+        self.parent_id = parent_id
         super().__init__(payload)
 
     @property
@@ -154,9 +155,9 @@ class OrderMessage(ApiMessage):
     @property
     def legs(self) -> List[OrderMessage]:
         if self._raw['legs'] is None:
-            return []
+            return {}
         else:
-            return [OrderMessage(leg) for leg in self._raw['legs']]
+            return {leg['id']: OrderMessage(leg, self.id) for leg in self._raw['legs']}
 
     def get_response_latency(self) -> float:
         """Calculates latency of Order message from Alpaca API.
